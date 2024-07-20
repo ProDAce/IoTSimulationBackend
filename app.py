@@ -1,5 +1,6 @@
 import os
 import psycopg2
+from psycopg2 import sql
 from dotenv import load_dotenv
 from flask import Flask, request
 import threading
@@ -7,6 +8,7 @@ import time
 import random
 import json
 from datetime import datetime,timezone
+from flask_socketio import SocketIO
 
 CREATE_DEVICES_TABLE = ("CREATE TABLE IF NOT EXISTS devices (id SERIAL PRIMARY KEY, device_id TEXT UNIQUE, name TEXT, type TEXT, register_time TIMESTAMP);")
 CREATE_TEMPERATURE_TABLE = """CREATE TABLE IF NOT EXISTS temperatures (device_id TEXT, sensor_value REAL, time TIMESTAMP);"""
@@ -21,6 +23,22 @@ INSERT_WIND="INSERT INTO winds (device_id, sensor_value, time) VALUES (%s, %s, %
 INSERT_PRESSURE="INSERT INTO pressures (device_id, sensor_value, time) VALUES (%s, %s, %s);"
 
 FETCH_ALL_DEVICES="SELECT * FROM devices;"
+FETCH_AVERAGE_TEMPERATURE="SELECT AVG(sensor_value) FROM temperatures WHERE device_id = %s AND time BETWEEN %s AND %s;"
+FETCH_AVERAGE_HUMIDITY="SELECT AVG(sensor_value) FROM humidities WHERE device_id = %s AND time BETWEEN %s AND %s;"
+FETCH_AVERAGE_WIND="SELECT AVG(sensor_value) FROM winds WHERE device_id = %s AND time BETWEEN %s AND %s;"
+FETCH_AVERAGE_PRESSURE="SELECT AVG(sensor_value) FROM pressures WHERE device_id = %s AND time BETWEEN %s AND %s;"
+
+FETCH_MAX_TEMPERATURE="SELECT MAX(sensor_value) FROM temperatures WHERE device_id = %s AND time BETWEEN %s AND %s;"
+FETCH_MAX_HUMIDITY="SELECT MAX(sensor_value) FROM humidities WHERE device_id = %s AND time BETWEEN %s AND %s;"
+FETCH_MAX_WIND="SELECT MAX(sensor_value) FROM winds WHERE device_id = %s AND time BETWEEN %s AND %s;"
+FETCH_MAX_PRESSURE="SELECT MAX(sensor_value) FROM pressures WHERE device_id = %s AND time BETWEEN %s AND %s;"
+
+FETCH_MIN_TEMPERATURE="SELECT MIN(sensor_value) FROM temperatures WHERE device_id = %s AND time BETWEEN %s AND %s;"
+FETCH_MIN_HUMIDITY="SELECT MIN(sensor_value) FROM humidities WHERE device_id = %s AND time BETWEEN %s AND %s;"
+FETCH_MIN_WIND="SELECT MIN(sensor_value) FROM winds WHERE device_id = %s AND time BETWEEN %s AND %s;"
+FETCH_MIN_PRESSURE="SELECT MIN(sensor_value) FROM pressures WHERE device_id = %s AND time BETWEEN %s AND %s;"
+
+
 
 last_values = {}
 flag = True
@@ -28,6 +46,8 @@ flag = True
 load_dotenv()
 
 app = Flask(__name__)
+app.config['SECRET_KEY'] = 'secret!'
+socketio = SocketIO(app, cors_allowed_origins="*")
 url = os.getenv('DATABASE_URL')
 connection = psycopg2.connect(host=url, user="postgres", password="password")
 
@@ -35,8 +55,7 @@ def get_time():
     now = datetime.now(timezone.utc)
     return now.strftime("%Y-%m-%d %H:%M:%S")
 
-def simulate_device(deviceID, deviceType, value):
-    dt = get_time()
+def simulate_device(deviceID, deviceType, value, dt):
     if deviceType == "Temperature":
         n = random.randint(1, 10)
         if n > 8 and value < 32:
@@ -73,14 +92,29 @@ def simulate_device(deviceID, deviceType, value):
         with connection:
             with connection.cursor() as cursor:
                 cursor.execute(INSERT_PRESSURE, (deviceID, value, dt))
-    
-    print(deviceID, value)
+    last_values[deviceID]["sensor_value"] = value
+    return value
 
 def continuous_function():
     global flag
     while flag:
+        dt = get_time()
+        device_data = {
+            "Temperature": [],
+            "Humidity": [],
+            "Wind": [],
+            "Pressure": []
+        }
+        device_data["timestamp"] = dt
         for d in last_values:
-            simulate_device(d, last_values[d]["type"], last_values[d]["sensor_value"])
+            result = simulate_device(d, last_values[d]["type"], last_values[d]["sensor_value"], dt)
+            device_data[last_values[d]["type"]].append({
+                "deviceID": d,
+                "value": result
+            })
+            
+        print(last_values)
+        socketio.emit('data', json.dumps(device_data))
         time.sleep(10)  # Sleep for 10 seconds
 
 # Start the thread within the Flask application
@@ -142,10 +176,10 @@ def drop_all():
     
     with connection:
         with connection.cursor() as cursor:
-            cursor.execute("DROP TABLE IF EXISTS temps;")
+            cursor.execute("DROP TABLE IF EXISTS temperatures;")
             cursor.execute("DROP TABLE IF EXISTS humidities;")
             cursor.execute("DROP TABLE IF EXISTS winds;")
-            cursor.execute("DROP TABLE IF EXISTS precips;")
+            cursor.execute("DROP TABLE IF EXISTS pressures;")
     return "IoT devices stopped AND all data is deleted!!!"
 
 @app.post('/api/register')
@@ -203,3 +237,100 @@ def fetch_device():
         for d in devices
     ]
     return json.dumps(data_dict), 201
+
+@app.get('/api/average')
+def get_average():
+    data = request.get_json()
+    device_id = data["deviceID"]
+    start_time = data["startTime"]
+    end_time = data["endTime"]
+    d_type = data["type"]
+    
+    if d_type == "Temperature":
+        tb = FETCH_AVERAGE_TEMPERATURE
+    elif d_type == "Humidity":
+        tb = FETCH_AVERAGE_HUMIDITY
+    elif d_type == "Wind":
+        tb = FETCH_AVERAGE_WIND
+    elif d_type == "Pressure":
+        tb = FETCH_AVERAGE_PRESSURE
+
+    result = []
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(tb, (device_id, start_time, end_time))
+            result = cursor.fetchone()[0]
+
+    print(result)
+    return {"value": result}
+
+@app.get('/api/max')
+def get_max():
+    data = request.get_json()
+    device_id = data["deviceID"]
+    start_time = data["startTime"]
+    end_time = data["endTime"]
+    d_type = data["type"]
+    
+    if d_type == "Temperature":
+        tb = FETCH_MAX_TEMPERATURE
+    elif d_type == "Humidity":
+        tb = FETCH_MAX_HUMIDITY
+    elif d_type == "Wind":
+        tb = FETCH_MAX_WIND
+    elif d_type == "Pressure":
+        tb = FETCH_MAX_PRESSURE
+
+    result = []
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(tb, (device_id, start_time, end_time))
+            result = cursor.fetchone()[0]
+
+    print(result)
+    return {"value": result}
+
+@app.get('/api/min')
+def get_min():
+    data = request.get_json()
+    device_id = data["deviceID"]
+    start_time = data["startTime"]
+    end_time = data["endTime"]
+    d_type = data["type"]
+    
+    if d_type == "Temperature":
+        tb = FETCH_MIN_TEMPERATURE
+    elif d_type == "Humidity":
+        tb = FETCH_MIN_HUMIDITY
+    elif d_type == "Wind":
+        tb = FETCH_MIN_WIND
+    elif d_type == "Pressure":
+        tb = FETCH_MIN_PRESSURE
+
+    result = []
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(tb, (device_id, start_time, end_time))
+            result = cursor.fetchone()[0]
+
+    print(result)
+    return {"value": result}
+
+@app.route('/socket')
+def index():
+    return "WebSocket Server Running"
+
+@socketio.on('connect')
+def handle_connect():
+    print('Client connected')
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    print('Client disconnected')
+
+# if __name__ == '__main__':
+#     # Start the data generation in a separate thread
+#     data_thread = threading.Thread(target=generate_data)
+#     data_thread.daemon = True
+#     data_thread.start()
+#     socketio.run(app, host='0.0.0.0', port=5000)

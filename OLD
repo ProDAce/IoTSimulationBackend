@@ -1,0 +1,220 @@
+import os
+import psycopg2
+from dotenv import load_dotenv
+from flask import Flask, request
+import threading
+import time
+import random
+import json
+from datetime import datetime
+
+# CREATE_DEVICES_TABLE = ("CREATE TABLE IF NOT EXISTS devices (id SERIAL PRIMARY KEY, name TEXT, type TEXT);")
+
+# CREATE_TEMPERATURE_TABLE = """CREATE TABLE IF NOT EXISTS temperatures (device_id TEXT, temp REAL, time TIMESTAMP);"""
+# CREATE_HUMIDITY_TABLE = """CREATE TABLE IF NOT EXISTS humidities (device_id TEXT, humidity REAL, time TIMESTAMP);"""
+# CREATE_WIND_TABLE = """CREATE TABLE IF NOT EXISTS winds (device_id TEXT, wind REAL, time TIMESTAMP);"""
+# CREATE_PRECIP_TABLE = """CREATE TABLE IF NOT EXISTS precips (device_id TEXT, precip REAL, time TIMESTAMP);"""
+
+# INSERT_DEVICE = """INSERT INTO devices (name, type) VALUES (%s, %s) RETURNING id;"""
+
+# INSERT_TEMP = """INSERT INTO temperatures (device_id, temp, time) VALUES (%s, %s, %s);"""
+# INSERT_HUMIDITY = """INSERT INTO humidities (device_id, humidity, time) VALUES (%s, %s, %s);"""
+# INSERT_WIND = """INSERT INTO winds (device_id, wind, time) VALUES (%s, %s, %s);"""
+# INSERT_PRECIP = """INSERT INTO precips (device_id, precip, time) VALUES (%s, %s, %s);"""
+
+
+# INSERT_TEMPERATURE = """INSERT INTO temperatures (device_id, value, time) VALUES (%s, %s, %s);"""
+# FETCH_ALL_DEVICES="SELECT * FROM devices;"
+
+# FETCH_TEMP="SELECT * FROM %s WHERE time BETWEEN %s AND %s"
+
+CREATE_DEVICES_TABLE = ("CREATE TABLE IF NOT EXISTS devices (id SERIAL PRIMARY KEY, device_id TEXT, name TEXT, type TEXT);")
+
+CREATE_TEMPERATURE_TABLE = """CREATE TABLE IF NOT EXISTS temperatures (device_id TEXT, temp REAL, time TIMESTAMP);"""
+CREATE_HUMIDITY_TABLE = """CREATE TABLE IF NOT EXISTS humidities (device_id TEXT, humidity REAL, time TIMESTAMP);"""
+CREATE_WIND_TABLE = """CREATE TABLE IF NOT EXISTS winds (device_id TEXT, wind REAL, time TIMESTAMP);"""
+CREATE_PRESSURE_TABLE = """CREATE TABLE IF NOT EXISTS pressure (device_id TEXT, precip REAL, time TIMESTAMP);"""
+
+d_t = 28.0
+d_h = 40
+d_w = 12
+d_p = 6
+flag = True
+
+load_dotenv()
+
+app = Flask(__name__)
+url = os.getenv('DATABASE_URL')
+connection = psycopg2.connect(host=url, user="postgres", password="password")
+
+
+def tempDevice(time):
+    global d_t
+    n = random.randint(1, 10)
+    if n > 8 and d_t < 32:
+        d_t = d_t + 0.1
+    elif n >= 7 and n <= 8 and d_t > 26:
+        d_t = d_t - 0.1
+
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(CREATE_TEMP_TABLE)
+            cursor.execute(INSERT_TEMP, ("temp_device", d_t, time))
+
+def humidityDevice(time):
+    global d_h
+    n = random.randint(1, 10)
+    if n > 7 and d_h < 90:
+        d_h = d_h + 1
+    elif n >= 5 and n <= 7 and d_h > 20:
+        d_h = d_h - 1
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(CREATE_HUMIDITY_TABLE)
+            cursor.execute(INSERT_HUMIDITY, ("humidity_device", d_h, time))
+
+def windDevice(time):
+    global d_w
+    n = random.randint(1, 10)
+    if n > 8 and d_w < 16:
+        d_w = d_w + 1
+    elif n >= 7 and n <= 8 and d_w > 4:
+        d_w = d_w - 1
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(CREATE_WIND_TABLE)
+            cursor.execute(INSERT_WIND, ("wind_device", d_w, time))
+
+def precepDevice(time):
+    global d_p
+    n = random.randint(1, 10)
+    if n > 8 and d_p < 10:
+        d_p = d_p + 1
+    elif n >= 7 and n <= 8 and d_p > 0:
+        d_p = d_p - 1
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(CREATE_PRECIP_TABLE)
+            cursor.execute(INSERT_PRECIP, ("precip_device", d_p, time))
+
+def get_time():
+    now = datetime.now(datetime.UTC)
+    return now.strftime("%Y-%m-%d %H:%M:%S")
+
+def simulate_device(deviceID, deviceType, value):
+    dt = get_time()
+    print(dt)
+    if deviceType == "temperature":
+        with connection:
+            with connection.cursor() as cursor:
+                cursor.execute(INSERT_TEMPERATURE, (deviceID, value))
+
+
+def continuous_function():
+    global flag
+    while flag:
+        now = datetime.now()
+        dt_string = now.strftime("%Y-%m-%d %H:%M:%S")
+        tempDevice(dt_string)
+        humidityDevice(dt_string)
+        windDevice(dt_string)
+        precepDevice(dt_string)
+        # print(now)
+        time.sleep(10)  # Sleep for 5 seconds
+
+# Start the thread within the Flask application
+def start_continuous_function():
+    thread = threading.Thread(target=continuous_function)
+    thread.daemon = True  # Daemonize thread
+    thread.start()
+
+
+@app.route('/api/start')
+def start_server():
+
+    data = request.get_json()
+    name = data["name"]
+    d_type = data["type"]
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(CREATE_DEVICES_TABLE)
+            cursor.execute(CREATE_TEMPERATURE_TABLE)
+            cursor.execute(CREATE_HUMIDITY_TABLE)
+            cursor.execute(CREATE_WIND_TABLE)
+            cursor.execute(CREATE_PRESSURE_TABLE)
+
+    # return {"id":device_id, "message": f"Device {name} of type: {d_type} created"}, 201
+
+    global flag
+    flag = True
+    start_continuous_function()
+    return "IoT devices running"
+
+@app.route('/api/check')
+def check_server():
+    return "CHECKED!!"
+
+@app.route('/api/end')
+def end_server():
+    global flag
+    flag = False
+    # start_continuous_function()
+    return "IoT devices stopped"
+
+@app.route('/api/dropall')
+def drop_all():
+
+    global flag
+    flag = False
+    
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute("DROP TABLE IF EXISTS temps;")
+            cursor.execute("DROP TABLE IF EXISTS humidities;")
+            cursor.execute("DROP TABLE IF EXISTS winds;")
+            cursor.execute("DROP TABLE IF EXISTS precips;")
+    return "IoT devices stopped AND all data is deleted!!!"
+
+
+@app.get('/api/between')
+def get_average():
+    data = request.get_json()
+    keys = data["keys"]
+    start_time = data["startTime"]
+    end_time = data["endTime"]
+
+    result = []
+    for k in keys:
+        with connection:
+            with connection.cursor() as cursor:
+                cursor.execute(FETCH_TEMP, (k, start_time, end_time))
+                result.append(cursor.fetchall())
+
+    return result
+
+@app.post('/api/device')
+def add_temp():
+    data = request.get_json()
+    name = data["name"]
+    d_type = data["type"]
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(CREATE_DEVICES_TABLE)
+            cursor.execute(INSERT_DEVICE, (name, d_type))
+            device_id = cursor.fetchone()[0]
+
+    return {"id":device_id, "message": f"Device {name} of type: {d_type} created"}, 201
+
+@app.get('/api/fetch/device')
+def fetch_all():
+    # data = request.get_json()
+    # device = data["deviceID"]
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(FETCH_ALL_DEVICES)
+            # cursor.execute(INSERT_DEVICE, (device,))
+            # device_id = cursor.fetchone()[0]
+            devices = cursor.fetchall()
+
+    return json.dumps(devices), 201
+
